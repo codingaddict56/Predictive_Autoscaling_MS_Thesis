@@ -1,0 +1,141 @@
+services:
+  app:
+    build: ./data-replay
+    environment:
+      - NODE_ENV=production
+      - METRICS_PORT=8080
+      - REPLAY_FILE=/data/vmcloud_small.csv     # pick your CSV here
+      - REPLAY_DATASET=auto                     # auto | vmcloud | borg | cicids
+      - REPLAY_RATE=5                           # rows/sec if not pacing by time
+      - REPLAY_LOOP=true
+      # Optional time pacing if you have a timestamp column:
+      # - REPLAY_TIME_COL=timestamp_ms
+      # - REPLAY_TIME_SCALE=60
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ./artifacts:/app/artifacts
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - monitoring
+    restart: unless-stopped
+
+  scaling-controller:
+    build: ./scaling-controller
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - PREDICTION_FILE=/app/artifacts/predictive_signal.json
+      - SLO_P95_SEC=0.09            # seconds SLO for p95 latency (adjust units to your JSON)
+      - SAFETY_FACTOR=1.0
+      - SCALE_COOLDOWN_SEC=60
+      - MIN_SCALE_STEP=1
+      - MAX_SCALE_STEP=3
+      # Optional reactive thresholds (override defaults in code if you want):
+      # - CPU_THRESHOLD=70
+      # - MEMORY_THRESHOLD=80
+      # - RT_THRESHOLD=2
+      # - ERROR_RATE_THRESHOLD=0.1
+    volumes:
+      - ./artifacts:/app/artifacts
+    ports:
+      - "8082:8082"                # access /metrics and /health from host
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - app
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local
+
+networks:
+  monitoring:
+    driver: bridge

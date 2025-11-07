@@ -1,0 +1,8 @@
+{
+  "metric": "response_time_p95",
+  "model": "lstm_mc",
+  "horizon_seconds": null,
+  "mean": 0.09000950306653976,
+  "sigma": 0.0032148940954357386,
+  "units": "seconds"
+}
